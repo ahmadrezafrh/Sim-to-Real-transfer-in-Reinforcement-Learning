@@ -5,6 +5,8 @@
 """
 import gym
 from env.custom_hopper import *
+from stable_baselines3 import PPO
+
 
 def main():
     env = gym.make('CustomHopper-source-v0')
@@ -19,6 +21,21 @@ def main():
             - train a policy with stable-baselines3 on source env
             - test the policy with stable-baselines3 on <source,target> envs
     """
+
+    model = PPO("MlpPolicy", env, verbose=1)
+    model.learn(total_timesteps=10_000)
+    
+    vec_env = model.get_env()
+    obs = vec_env.reset()
+    for i in range(1000):
+        action, _states = model.predict(obs, deterministic=True)
+        obs, reward, done, info = vec_env.step(action)
+        vec_env.render()
+        # VecEnv resets automatically
+        # if done:
+        #   obs = env.reset()
+    
+    env.close()
 
 if __name__ == '__main__':
     main()
