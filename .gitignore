@@ -1,0 +1,4 @@
+.spyproject/
+MUJOCO_LOG.TXT
+backup/
+env/__pycache__/
