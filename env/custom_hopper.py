@@ -14,24 +14,37 @@ class CustomHopper(MujocoEnv, utils.EzPickle):
     def __init__(self, domain=None):
         MujocoEnv.__init__(self, 4)
         utils.EzPickle.__init__(self)
-
+        self.randomization = False
         self.original_masses = np.copy(self.sim.model.body_mass[1:])    # Default link masses
-
         if domain == 'source':  # Source environment has an imprecise torso mass (1kg shift)
             self.sim.model.body_mass[1] -= 1.0
 
 
+    def set_distributions(self, distributions):
+        self.randomization = True
+        self.distributions = distributions
+        self.n_distributions = len(distributions)
+
+
+            
     def set_random_parameters(self):
         """Set random masses
         TODO
         """
-        self.set_parameters(*self.sample_parameters())
+        self.set_parameters(self.sample_parameters())
 
     def sample_parameters(self):
         """Sample masses according to a domain randomization distribution
         TODO
         """
-        return
+        if self.n_distributions==1:
+            task = np.random.uniform(self.distributions[0][0], self.distributions[0][1], size = 3)
+        else:
+            task = np.empty(self.n_distributions, dtype=np.float64)
+            for i in range(self.n_distributions):
+                sample = np.random.uniform(self.distributions[i][0], self.distributions[i][1])
+                task[i] = sample
+        return task
 
     def get_parameters(self):
         """Get value of mass for each link"""
@@ -40,7 +53,7 @@ class CustomHopper(MujocoEnv, utils.EzPickle):
 
     def set_parameters(self, task):
         """Set each hopper link's mass to a new value"""
-        self.sim.model.body_mass[1:] = task
+        self.sim.model.body_mass[2:] = task
 
     def step(self, a):
         """Step the simulation to the next timestep
@@ -58,10 +71,18 @@ class CustomHopper(MujocoEnv, utils.EzPickle):
         reward += alive_bonus
         reward -= 1e-3 * np.square(a).sum()
         s = self.state_vector()
-        done = not (np.isfinite(s).all() and (np.abs(s[2:]) < 100).all() and (height > .7) and (abs(ang) < .2))
+        self.done = not (np.isfinite(s).all() and (np.abs(s[2:]) < 100).all() and (height > .7) and (abs(ang) < .2))
         ob = self._get_obs()
-
-        return ob, reward, done, {}
+        
+        
+        try:
+            if self.done & self.randomization:
+                self.set_random_parameters()
+        except:
+            print('Randomization failed.')
+            pass
+        
+        return ob, reward, self.done, {}
 
     def _get_obs(self):
         """Get current state"""
@@ -111,7 +132,14 @@ gym.envs.register(
 
 
 
-
+# def randomize_mass(env, loweBound, upperBound):
+#     new_env = env
+#     # Define the distribution for randomizing the mass
+#     distribution = [loweBound, upperBound]
+#     randomized_masses = numpy.random.uniform(distribution[0], distribution[1], size= 3)
+#     # Set the randomized masses
+#     new_env.model.body_mass[2:] = randomized_masses
+#     return new_env
 
 
 
