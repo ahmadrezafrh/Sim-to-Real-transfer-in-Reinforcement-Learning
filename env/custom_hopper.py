@@ -11,10 +11,14 @@ from .mujoco_env import MujocoEnv
 from scipy.stats import truncnorm
 
 class CustomHopper(MujocoEnv, utils.EzPickle):
-    def __init__(self, domain=None):
+    def __init__(self, domain=None, show=False):
+        self.randomization = False
+        self.show = show
+        self.ep_count = 0
+        self.n_distributions = 1
         MujocoEnv.__init__(self, 4)
         utils.EzPickle.__init__(self)
-        self.randomization = False
+        
         self.original_masses = np.copy(self.sim.model.body_mass[1:])    # Default link masses
         if domain == 'source':  # Source environment has an imprecise torso mass (1kg shift)
             self.sim.model.body_mass[1] -= 1.0
@@ -24,7 +28,7 @@ class CustomHopper(MujocoEnv, utils.EzPickle):
         self.randomization = True
         self.distributions = distributions
         self.n_distributions = len(distributions)
-
+        
 
             
     def set_random_parameters(self):
@@ -39,7 +43,7 @@ class CustomHopper(MujocoEnv, utils.EzPickle):
         """
         if self.n_distributions==1:
             task = np.random.uniform(self.distributions[0][0], self.distributions[0][1], size = 3)
-        else:
+        else :
             task = np.empty(self.n_distributions, dtype=np.float64)
             for i in range(self.n_distributions):
                 sample = np.random.uniform(self.distributions[i][0], self.distributions[i][1])
@@ -54,6 +58,10 @@ class CustomHopper(MujocoEnv, utils.EzPickle):
     def set_parameters(self, task):
         """Set each hopper link's mass to a new value"""
         self.sim.model.body_mass[2:] = task
+        if self.show:
+            self.ep_count +=1
+            print(f'\nepisode {self.ep_count} finished.')
+            print('new dyynamics parameters:', self.get_parameters())
 
     def step(self, a):
         """Step the simulation to the next timestep
@@ -74,14 +82,10 @@ class CustomHopper(MujocoEnv, utils.EzPickle):
         self.done = not (np.isfinite(s).all() and (np.abs(s[2:]) < 100).all() and (height > .7) and (abs(ang) < .2))
         ob = self._get_obs()
         
-        
-        try:
-            if self.done & self.randomization:
-                self.set_random_parameters()
-        except:
-            print('Randomization failed.')
-            pass
-        
+
+        if self.done & self.randomization:
+            self.set_random_parameters()
+    
         return ob, reward, self.done, {}
 
     def _get_obs(self):

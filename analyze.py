@@ -48,10 +48,10 @@ x = np.array(x)
 y = np.array(y)
 z = np.array(z)
 
-ax = plt.axes(projection='3d')
+ax = plt.axes()
 ax.set_xlabel('mean')
-ax.set_ylabel('length')
+# ax.set_ylabel('length')
 ax.set_zlabel('reward');  
-ax.scatter3D(x, y, z, c=z, cmap='Greens')
+ax.scatter(x, z, c=z, cmap='Greens')
 plt.show()
 

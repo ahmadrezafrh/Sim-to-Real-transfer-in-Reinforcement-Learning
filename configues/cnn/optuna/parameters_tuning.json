@@ -1,0 +1,36 @@
+{
+
+    "models_dir": "./models/optuna_tuning_main_params",
+    "logs_dir": "./logs",
+    "n_trials": 100,
+    
+    "env": "CustomHopper-source-v0",
+    "alg": "ppo",
+    "obs": "cnn",
+    "policy": "CnnPolicy",
+    "ignore_warnings": true,
+    "print" : true,
+    "custom_arch": true,
+    "time_steps": 1e6,
+    
+    "domain_randomization": false,
+    "chosen_domain": [[1.5, 2.4]],
+    
+    "stacked": true,
+    "gray_scale": true,
+    "smooth": [true, false],
+    "resize": true,
+    "resize_shape": [64, 128, 256, 352],
+    "preprocess": [true, false],
+    "n_frame_stacks": [4, 8, 16, 32],
+    "policy_kwargs": ["base"],
+    
+    
+    "n_steps": [512, 4096],
+    "learning_rate": [0.00001, 0.001],
+    "gamma": [0.95, 0.9999],
+    "clip_range": [0.1, 0.3],
+    "gae_lambda": [0.95, 0.99],
+    "ent_coef": 0
+
+}

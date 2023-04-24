@@ -1,247 +1,277 @@
-import os
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Apr 20 17:43:25 2023
 
-import gym
+@author: ahmadrezafrh
+"""
+
 import numpy as np
-from stable_baselines3.common.results_plotter import load_results, ts2xy
-from stable_baselines3.common.callbacks import BaseCallback
+import gym
+import os
+import warnings
+import itertools
+import json
+import shutil
 
-from gym import spaces
-from gym.spaces import Box
-import collections
-import copy
-from collections.abc import MutableMapping
+from env.custom_hopper import *
+from wrappers import PixelObservationWrapper
+from wrappers import GrayScaleWrapper
+from wrappers import ResizeWrapper
+from wrappers import PreprocessWrapper
+from wrappers import FrameStack
 
-STATE_KEY = "state"
 
-class PixelObservationWrapper(gym.ObservationWrapper):
-    """Augment observations by pixel values."""
+from stable_baselines3 import PPO
 
-    def __init__(
-        self, env, pixels_only=True, render_kwargs=None, pixel_keys=("pixels",)
-    ):
-        """Initializes a new pixel Wrapper.
 
-        Args:
-            env: The environment to wrap.
-            pixels_only: If `True` (default), the original observation returned
-                by the wrapped environment will be discarded, and a dictionary
-                observation will only include pixels. If `False`, the
-                observation dictionary will contain both the original
-                observations and the pixel observations.
-            render_kwargs: Optional `dict` containing keyword arguments passed
-                to the `self.render` method.
-            pixel_keys: Optional custom string specifying the pixel
-                observation's key in the `OrderedDict` of observations.
-                Defaults to 'pixels'.
+def custom_extractor(model, n_features):
+    kwargs = dict(
+        features_extractor_class=model,
+        features_extractor_kwargs=dict(features_dim=n_features)
+    )
+        
+    return kwargs
+  
+  
+def ignore_warnings(ignore):
+    if ignore:
+        warnings.filterwarnings("ignore")
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 
-        Raises:
-            ValueError: If `env`'s observation spec is not compatible with the
-                wrapper. Supported formats are a single array, or a dict of
-                arrays.
-            ValueError: If `env`'s observation already contains any of the
-                specified `pixel_keys`.
-        """
+def check_path(path):
+    if not os.path.exists(path):
+        os.makedirs(path)
 
-        super(PixelObservationWrapper, self).__init__(env)
+def create_params(configue):
+    params = [configue['learning_rate'], configue['gamma'], configue['clip_range'], configue['ent_coef'], configue['n_steps'], configue['gae_lambda']]      
+    if configue['obs']=='cnn':
+        cnn_params = [configue['stacked'], configue['gray_scale'], configue['resize'], configue['resize_shape'], configue['n_frame_stacks'], configue['preprocess'], configue['policy_kwargs'], configue['smooth']]
+        params.extend(cnn_params) 
+    
+    
+    
+    if configue['domain_randomization']:
+        params.append(domain_randomization(configue['chosen_domain']))
+    
+    return list(itertools.product(*params))
 
-        if render_kwargs is None:
-            render_kwargs = {}
 
-        for key in pixel_keys:
-            render_kwargs.setdefault(key, {})
+def domain_randomization(domain_spaces):
+    
+    assert domain_spaces != None
 
-            render_mode = render_kwargs[key].pop("mode", "rgb_array")
-            assert render_mode == "rgb_array", render_mode
-            render_kwargs[key]["mode"] = "rgb_array"
+    if domain_spaces=='grid':
+        lower_bounds = np.arange(0.5, 5, 0.5).tolist()
+        range_lower_upper = np.arange(0.5, 5, 0.2).tolist()
+        ranges = list(itertools.product(lower_bounds, range_lower_upper))
+        
+        domain_randomization_space = []
+        for n in ranges:
+            domain_randomization_space.append([[n[0], n[0]+n[1]]])
+                
+    else:
+        domain_randomization_space = domain_spaces
+        
+    return domain_randomization_space
 
-        wrapped_observation_space = env.observation_space
+def create_env(meta):
+    if meta['obs'] == 'mlp':
+        env = gym.make(meta['env']) 
 
-        if isinstance(wrapped_observation_space, spaces.Box):
-            self._observation_is_dict = False
-            invalid_keys = set([STATE_KEY])
-        elif isinstance(wrapped_observation_space, (spaces.Dict, MutableMapping)):
-            self._observation_is_dict = True
-            invalid_keys = set(wrapped_observation_space.spaces.keys())
-        else:
-            raise ValueError("Unsupported observation space structure.")
+        print('State space:', env.observation_space.shape)
+        print('Action space:', env.action_space)
+        print('Dynamics parameters:', env.get_parameters()) 
 
-        if not pixels_only:
-            # Make sure that now keys in the `pixel_keys` overlap with
-            # `observation_keys`
-            overlapping_keys = set(pixel_keys) & set(invalid_keys)
-            if overlapping_keys:
-                raise ValueError(
-                    "Duplicate or reserved pixel keys {!r}.".format(overlapping_keys)
-                )
+    if meta['obs'] == 'cnn':
+        env = gym.make(meta['env']) 
+        env = PixelObservationWrapper(env)
+        print('state observation shape', env.observation_space.shape)
+        if meta['preprocess']:
+            env = PreprocessWrapper(env)
+            print('obervation shape after preprocessing:', env.observation_space.shape)
+            
+        if meta['gray_scale']:
+            env = GrayScaleWrapper(env, smooth=meta['smooth'], preprocessed=meta['preprocess'], keep_dim=False)
+            print('obervation shape after gray scaling:', env.observation_space.shape)
+            if meta['resize']:
+                env = ResizeWrapper(env, shape=meta['resize_shape'])
+                print('obervation shape after resizing:', env.observation_space.shape)
 
-        if pixels_only:
-            self.observation_space = spaces.Dict()
-        elif self._observation_is_dict:
-            self.observation_space = copy.deepcopy(wrapped_observation_space)
-        else:
-            self.observation_space = spaces.Dict()
-            self.observation_space.spaces[STATE_KEY] = wrapped_observation_space
+        if meta['env']:
+            env = FrameStack(env, num_stack=meta['n_frame_stacks'])
+            print('obervation shape after stacking:', env.observation_space.shape)
+    
+    if meta['domain_randomization']:
+        env.set_distributions(meta['chosen_domain'])
+        
+    return env
 
-        # Extend observation space with pixels.
-
-        pixels_spaces = {}
-        for pixel_key in pixel_keys:
-            pixels = self.env.render(**render_kwargs[pixel_key])
-
-            if np.issubdtype(pixels.dtype, np.integer):
-                low, high = (0, 255)
-            elif np.issubdtype(pixels.dtype, np.float):
-                low, high = (-float("inf"), float("inf"))
-            else:
-                raise TypeError(pixels.dtype)
-
-            pixels_space = spaces.Box(
-                shape=pixels.shape, low=low, high=high, dtype=pixels.dtype
-            )
-            pixels_spaces[pixel_key] = pixels_space
-
-        self.observation_space= pixels_space
-
-        self._env = env
-        self._pixels_only = pixels_only
-        self._render_kwargs = render_kwargs
-        self._pixel_keys = pixel_keys
-
-    def observation(self, observation):
-        pixel_observation = self._add_pixel_observation(observation)
-        return pixel_observation
-
-    def _add_pixel_observation(self, wrapped_observation):
-        if self._pixels_only:
-            observation = collections.OrderedDict()
-        elif self._observation_is_dict:
-            observation = type(wrapped_observation)(wrapped_observation)
-        else:
-            observation = collections.OrderedDict()
-            observation[STATE_KEY] = wrapped_observation
-
-        pixel_observations = self.env.render(**self._render_kwargs["pixels"])
+def create_meta(configue, hp, method='grid'):
+    
+    if method=='grid':
+        model_conf = {
+            'env' : configue["env"],    
+            'print' : configue["print"],    
+            'alg' : configue["alg"],
+            'obs' : configue["obs"],
+            'ignore_warnings' : configue['ignore_warnings'],
+            'custom_arch' : configue['custom_arch'],
+            'time_steps' : configue['time_steps'],
+            'policy' : configue['policy'],
+            
+            
+            'domain_randomization' : configue['domain_randomization'],
+            'n_distributions' : configue['n_distributions'] if configue['domain_randomization'] else None,
+            'chosen_domain' : hp[-1] if configue['domain_randomization'] else None,
+            
+            'stacked' : hp[6] if configue["obs"]=='cnn' else None,
+            'gray_scale' : hp[7] if configue["obs"]=='cnn' else None,
+            'smooth' : hp[13] if configue["obs"]=='cnn' and hp[7] else None,
+            'resize' : hp[8] if configue["obs"]=='cnn' else None,
+            'resize_shape' : hp[9] if configue["obs"]=='cnn' and hp[8] else None,
+            'preprocess' : hp[11] if configue["obs"]=='cnn' else None,
+            'n_frame_stacks' : hp[10] if configue["obs"]=='cnn' else None,
+            "policy_kwargs" : hp[12] if configue["obs"]=='cnn' else None,
             
 
-        observation = pixel_observations
+            'n_steps' : hp[4],
+            'learning_rate' : hp[0],
+            'gamma' : hp[1],
+            'clip_range' : hp[2],
+            'ent_coef' : hp[3],
+            'gae_lambda' : hp[5],
+            
+        }
+    
 
-        return observation
+    elif method=='optuna':
+        model_conf = {
+            'env' : configue["env"],    
+            'print' : configue["print"],    
+            'alg' : configue["alg"],
+            'obs' : configue["obs"],
+            'ignore_warnings' : configue['ignore_warnings'],
+            'custom_arch' : configue['custom_arch'],
+            'time_steps' : configue['time_steps'],
+            'policy' : configue['policy'],
+            
+            
+            
+            'domain_randomization' : configue['domain_randomization'],
+            'chosen_domain' : hp['chosen_domain'] if configue['domain_randomization'] else None,
+            
+            'stacked' : configue['stacked'] if configue["obs"]=='cnn' else None,
+            'gray_scale' : configue['gray_scale'] if configue["obs"]=='cnn' else None,
+            'smooth' : hp['smooth'] if configue["obs"]=='cnn' else None,
+            'resize' : configue['resize'] if configue["obs"]=='cnn' else None,
+            'resize_shape' : [hp['resize_shape'], hp['resize_shape']] if configue["obs"]=='cnn' and configue['resize'] else None,
+            'preprocess' : hp['preprocess'] if configue["obs"]=='cnn' else None,
+            'n_frame_stacks' : hp['n_frame_stacks'] if configue["obs"]=='cnn' else None,
+            "policy_kwargs" : hp['policy_kwargs'] if configue["obs"]=='cnn' else None,
+            
+            
+            'n_steps' : hp['n_steps'],
+            'learning_rate' : hp['learning_rate'],
+            'gamma' : hp['gamma'],
+            'clip_range' : hp['clip_range'],
+            'ent_coef' : configue['ent_coef'],
+            'gae_lambda' : hp['gae_lambda'],
+        }
+        
+        
+    return model_conf
+  
+def save_meta(meta, model_path) :
+    with open(os.path.join(model_path, 'meta.json'), 'w') as model:
+        json.dump(meta, model)
+        
+def create_model(env, meta, logs_dir, policy_kwargs):
+
+    if meta['custom_arch'] and meta['obs'] == 'cnn':
+        model = PPO(env=env,
+                    policy=meta['policy'],
+                    learning_rate=meta['learning_rate'],
+                    gamma=meta['gamma'],
+                    clip_range=meta['clip_range'],
+                    ent_coef=meta['ent_coef'],
+                    n_steps=meta['n_steps'],
+                    gae_lambda=meta['gae_lambda'],
+                    verbose=0,
+                    device="cuda",
+                    policy_kwargs=policy_kwargs[meta['policy_kwargs']],
+                    tensorboard_log=logs_dir)
+        
+    else:
+        model = PPO(env=env,
+                    policy=meta['policy'],
+                    learning_rate=meta['learning_rate'],
+                    gamma=meta['gamma'],
+                    clip_range=meta['clip_range'],
+                    ent_coef=meta['ent_coef'],
+                    n_steps=meta['n_steps'],
+                    gae_lambda=meta['gae_lambda'],
+                    verbose=0,
+                    device="cuda",
+                    tensorboard_log=logs_dir)
+    
+    
+    return model
     
     
     
+def create_model_path(models_path):
+    paths = []
+    
+    for file in os.listdir(models_path):
+        if os.path.isdir(os.path.join(models_path, file)):
+            paths.append(int(file.split('_')[-1]))
+    
+    if len(paths) == 0:
+        model_num = 1
+        new_path = os.path.join(models_path, f'model_{model_num}')
+    else:
+        
+        model_num = max(paths)
+        model_path = os.path.join(models_path, f'model_{model_num}')
+        count = 0
+        for file in os.listdir(model_path):
+            if os.path.isfile(os.path.join(model_path, file)):
+                count += 1
 
-
-
-class GrayScaleObservation(gym.ObservationWrapper):
-    """Convert the image observation from RGB to gray scale.
-
-    Example:
-        >>> env = gym.make('CarRacing-v1')
-        >>> env.observation_space
-        Box(0, 255, (96, 96, 3), uint8)
-        >>> env = GrayScaleObservation(gym.make('CarRacing-v1'))
-        >>> env.observation_space
-        Box(0, 255, (96, 96), uint8)
-        >>> env = GrayScaleObservation(gym.make('CarRacing-v1'), keep_dim=True)
-        >>> env.observation_space
-        Box(0, 255, (96, 96, 1), uint8)
-    """
-
-    def __init__(self, env: gym.Env, keep_dim: bool = False):
-        """Convert the image observation from RGB to gray scale.
-
-        Args:
-            env (Env): The environment to apply the wrapper
-            keep_dim (bool): If `True`, a singleton dimension will be added, i.e. observations are of the shape AxBx1.
-                Otherwise, they are of shape AxB.
-        """
-        super().__init__(env)
-        self.keep_dim = keep_dim
-
-        assert (
-            isinstance(self.observation_space, Box)
-            and len(self.observation_space.shape) == 3
-            and self.observation_space.shape[-1] == 3
-        )
-
-        obs_shape = self.observation_space.shape[:2]
-        if self.keep_dim:
-            self.observation_space = Box(
-                low=0, high=255, shape=(obs_shape[0], obs_shape[1], 1), dtype=np.uint8
-            )
+        if count == 1:
+            shutil.rmtree(model_path)
+            new_path = model_path
+            
         else:
-            self.observation_space = Box(
-                low=0, high=255, shape=obs_shape, dtype=np.uint8
-            )
+            new_path = os.path.join(models_path, f'model_{model_num+1}')
+                
 
-    def observation(self, observation):
-        """Converts the colour observation to greyscale.
+    return new_path
+    
 
-        Args:
-            observation: Color observations
+    
+def load_configue(path):
+    with open(path) as model:
+        configue = json.load(model)
+    
+    return configue
 
-        Returns:
-            Grayscale observations
-        """
-        import cv2
-
-        observation = cv2.cvtColor(observation, cv2.COLOR_RGB2GRAY)
-        if self.keep_dim:
-            observation = np.expand_dims(observation, -1)
-        return observation
-
-
-class SaveOnBestTrainingRewardCallback(BaseCallback):
-    """
-    Callback for saving a model (the check is done every ``check_freq`` steps)
-    based on the training reward (in practice, we recommend using ``EvalCallback``).
-
-    :param check_freq:
-    :param log_dir: Path to the folder where the model will be saved.
-      It must contains the file created by the ``Monitor`` wrapper.
-    :param verbose: Verbosity level: 0 for no output, 1 for info messages, 2 for debug messages
-    """
-    def __init__(self, check_freq: int, log_dir: str, verbose: int = 1):
-        super(SaveOnBestTrainingRewardCallback, self).__init__(verbose)
-        self.check_freq = check_freq
-        self.log_dir = log_dir
-        self.save_path = os.path.join(log_dir, "best_model")
-        self.best_mean_reward = -np.inf
-
-    def _init_callback(self) -> None:
-        # Create folder if needed
-        if self.save_path is not None:
-            os.makedirs(self.save_path, exist_ok=True)
-
-    def _on_step(self) -> bool:
-        if self.n_calls % self.check_freq == 0:
-
-          # Retrieve training reward
-          x, y = ts2xy(load_results(self.log_dir), "timesteps")
-          if len(x) > 0:
-              # Mean training reward over the last 100 episodes
-              mean_reward = np.mean(y[-100:])
-              if self.verbose >= 1:
-                print(f"Num timesteps: {self.num_timesteps}")
-                print(f"Best mean reward: {self.best_mean_reward:.2f} - Last mean reward per episode: {mean_reward:.2f}")
-
-              # New best model, you could save the agent here
-              if mean_reward > self.best_mean_reward:
-                  self.best_mean_reward = mean_reward
-                  # Example for saving best model
-                  if self.verbose >= 1:
-                    print(f"Saving new best model to {self.save_path}")
-                  self.model.save(self.save_path)
-
-        return True
-
-
-
-
-def randomize_mass(env, dist1, dist2, dist3):
-
-    env.model.body_mass[2] = np.random.uniform(dist1)[1]
-    env.model.body_mass[3] = np.random.uniform(dist2)[1]
-    env.model.body_mass[4] = np.random.uniform(dist3)[1]
-
-    return env
+    
+    
+    
+    
+    
+def print_model(meta):
+    
+        if meta['print']:
+            print(f'\npolicy = {meta["policy"]}')
+            print(f'learning_rate = {meta["learning_rate"]}')
+            print(f'gamma = {meta["gamma"]}')
+            print(f'clip_range = {meta["clip_range"]}')
+            print(f'ent_coef = {meta["ent_coef"]}')
+            print(f'n_steps = {meta["n_steps"]}')
+            print(f'gae_lambda = {meta["gae_lambda"]}')
+            
+            if meta['domain_randomization']:
+                print(f'domain_space = {meta["chosen_domain"]}\n')

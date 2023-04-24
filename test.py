@@ -14,13 +14,14 @@ from stable_baselines3.common.evaluation import evaluate_policy
 def main():
     
     one_dir = True
-    domain_randomization = True
-    save_data = True
+    domain_randomization = False
+    save_data = False
+    tuned_method = 'optuna'
     eval_ep = 50
     policy = 'mlp'
     network = 'emprical'
     rewards_dir = './rewards'
-    models_dir = './models/ppo/mlp/brute_force/domain_randomized/emprical'
+    models_dir = 'PPO_vision_based_UDR_100k'
     model_ts = '500000'
     one_model = 'MlpPolicy_0.0004215440315139262_0.9917611787616847_0.12587511822701497_0_3904_0.959132778841134_[[1.5, 2.4]]'
     
@@ -34,6 +35,7 @@ def main():
     rewards['randomization distribution'] = []
     rewards['policy'] = []
     rewards['network'] = []
+    rewards['tuned method'] = []
     rewards['eval episodes'] = []
     rewards['source reward'] = []
     rewards['target reward'] = []
@@ -63,6 +65,7 @@ def main():
         else:
             randomization_distribution = "not randomized"
             
+        print(f'randomization distribution: {randomization_distribution}')
         source_target_reward = {}
         for env in envs.items():
             
@@ -73,8 +76,7 @@ def main():
                                                       n_eval_episodes=eval_ep)
             
             source_target_reward[env[0]] = mean_reward
-            print(f'randomization distribution: {randomization_distribution}')
-            print(f'mean reward: {mean_reward}')
+            print(f'mean reward: {mean_reward}\n')
             env[1].close()
             
         
@@ -99,6 +101,7 @@ def main():
         rewards['eval episodes'].append(eval_ep)
         rewards['policy'].append(policy)
         rewards['network'].append(network)
+        rewards['tuned method'].append(tuned_method)
         rewards['source reward'].append(source_target_reward['source'])
         rewards['target reward'].append(source_target_reward['target'])
         

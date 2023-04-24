@@ -7,20 +7,24 @@ Created on Fri Mar 24 15:20:14 2023
 """
 
 from env.custom_hopper import *
-
-from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.evaluation import evaluate_policy
-# from table_baselines3.common.monitor import Monitor
-from stable_baselines3 import PPO
 
+from utils import create_model, create_model_path
+from utils import create_meta, create_env
+from utils import check_path, save_meta, load_configue
+from utils import ignore_warnings, print_model
+from utils import custom_extractor
+
+from models import CNNBaseExtractor
+from models import CNNSimple
+from models import CNNMobileNet
+from models import CNNLstm
+from models import CNNDecreasedFilters
+from models import CNNInreasedFilters
 
 
 import optuna
-import gym
 import os
-import pickle
-
-import warnings
 
 
 
@@ -46,7 +50,7 @@ def main():
     
     We use the best hyperparameters extracted from MLP and use it in CNN. However,
     it is better to optimize CNN seperately but due to the limtation of the software we 
-    just optimize the paramaeters of the CNN's network.
+    just optimize the paramaeters of the MLP's network.
     
     Finally, for domain randomization we just define multiple distribution and we use them
     to optimize the network with hypereparameters extracted above. (we do not consider
@@ -55,120 +59,92 @@ def main():
     '''
 
 
-    
-    def optimize_ppo(trial):
-        return {
-            'n_steps':trial.suggest_int('n_steps', 1024, 4096, step=64),
-            'gamma':trial.suggest_loguniform('gamma', 0.9, 0.9999),
-            'learning_rate':trial.suggest_loguniform('learning_rate', 1e-4, 1e-3),
-            'clip_range':trial.suggest_uniform('clip_range', 0.1, 0.3),
-            'gae_lambda':trial.suggest_uniform('gae_lambda', 0.9, 0.99),
-        }
      
     
+    def optimize_ppo(trial):
+        
+        tot_conf = general_paramaeters()
+        configue = {
+            'n_steps':trial.suggest_int('n_steps', tot_conf['n_steps'][0], tot_conf['n_steps'][1], step=64),
+            'gamma':trial.suggest_float('gamma', tot_conf['gamma'][0], tot_conf['gamma'][1]),
+            'learning_rate':trial.suggest_float('learning_rate', tot_conf['learning_rate'][0], tot_conf['learning_rate'][1], log=True),
+            'clip_range':trial.suggest_float('clip_range', tot_conf['clip_range'][0], tot_conf['clip_range'][1]),
+            'gae_lambda':trial.suggest_float('gae_lambda', tot_conf['gae_lambda'][0], tot_conf['gae_lambda'][1]),
+        }
+        
+            
+        
+        if tot_conf['obs']=='cnn':
+            configue['smooth'] = trial.suggest_categorical('smooth', tot_conf['smooth'])
+            configue['resize_shape'] = trial.suggest_categorical('resize_shape', tot_conf['resize_shape'])
+            configue['preprocess'] = trial.suggest_categorical('preprocess', tot_conf['preprocess'])
+            configue['n_frame_stacks'] = trial.suggest_categorical('n_frame_stacks', tot_conf['n_frame_stacks'])
+        
+
+            
+        if tot_conf['custom_arch']:
+            configue['policy_kwargs'] = trial.suggest_categorical('policy_kwargs', tot_conf['policy_kwargs'])
+            
+        return configue
     
     def general_paramaeters():
-        return {
-            'normalize':False,
-            'time_steps':5e5,
-            'time_steps_per_iter':30000,
-            'env':"CustomHopper-source-v0"
+        
+        configues_dir = './configues/optuna'
+        conf_name = 'optuna.json'
+        configue = load_configue(os.path.join(configues_dir, conf_name))
+        return configue
+    
+    def generate_architectures():
+        cnn_architectures = {
+            'base': custom_extractor(CNNBaseExtractor, 512),
+            'simple': custom_extractor(CNNSimple, 128),
+            'mobile_net': custom_extractor(CNNMobileNet, 128),
+            'cnn_lstm': custom_extractor(CNNLstm, 256),
+            'large' : custom_extractor(CNNInreasedFilters, 512),
+            'small' : custom_extractor(CNNDecreasedFilters, 128)
         }
+        
+        return cnn_architectures
+    
     
     def optimize_agent(trial):
         
+
         model_params = optimize_ppo(trial)
         other_params = general_paramaeters()
+        check_path(other_params['logs_dir'])
+        check_path(other_params['models_dir'])
+        meta = create_meta(other_params, model_params, method='optuna')
+        cnn_architectures = generate_architectures()
+        ignore_warnings(meta['ignore_warnings'])
         
         
-        logs_dir = os.path.join('./logs')
-        models_dir = os.path.join('./models','ppo', 'mlp', f'optuna_trial_{trial.number}', 'not_domain_randomized', 'emprical')
         
-        if not os.path.exists(logs_dir):
-            os.makedirs(logs_dir)
+        env = create_env(meta)
+        model = create_model(env, meta, logs_dir=other_params['logs_dir'], policy_kwargs=cnn_architectures)
+        print_model(meta)
 
-        if not os.path.exists(models_dir):
-            os.makedirs(models_dir)
-            
-        env = gym.make(other_params['env'])
-        if  other_params['normalize']:
-            env = VecNormalize(env, norm_obs=True, norm_reward=True,clip_obs=10.)  
-            
-        model = PPO(env=env,
-                    policy='MlpPolicy',
-                    verbose=0,
-                    device="cuda",
-                    tensorboard_log=logs_dir,
-                    **model_params)
         
-        ts = other_params['time_steps']
-        ts_per_iter = other_params['time_steps_per_iter']
-        models_dir_steps = os.path.join(models_dir, f"mlp_{model_params['learning_rate']}_{model_params['gamma']}_{model_params['clip_range']}_{model_params['n_steps']}_{model_params['gae_lambda']}")
-        
-        if not os.path.exists(models_dir_steps):
-            os.makedirs(models_dir_steps)
-            
-        for i in range(int(ts/ts_per_iter)):
-            model.learn(total_timesteps=ts_per_iter, reset_num_timesteps=False, tb_log_name=f"{models_dir_steps}")
-            model.save(os.path.join(models_dir_steps, f"{ts_per_iter*i + ts_per_iter}"))
-        
+        model_path = create_model_path(other_params['models_dir'])
+        check_path(model_path)
+        save_meta(meta, model_path)
+
+
+        model.learn(total_timesteps=meta['time_steps'], tb_log_name=f"{model_path}")
+        model.save(os.path.join(model_path, f"{meta['time_steps']}"))
         mean_reward, _ = evaluate_policy(model, env, n_eval_episodes=50)
+
         del model
         env.close()
         
         return mean_reward
     
-    
-    
-    
 
-
-    study_num = 1
-    n_trials = 150
-    study_dir = os.path.join('./params', 'studies')
-    params_dir = os.path.join('./params', 'best_params')
-    ignore_warninngs = True
-    
-    
-    if not os.path.exists(study_dir):
-        os.makedirs(study_dir)
-        
-        
-    if not os.path.exists(params_dir):
-        os.makedirs(params_dir)
-    
-    
-    
-    '''
-    Ignoring all warnings for better visualization
-    '''
-    if ignore_warninngs:
-        warnings.filterwarnings("ignore")
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
-        
-    
+    cfg = general_paramaeters()
+    n_trials = cfg['n_trials']
     study = optuna.create_study(direction='maximize')
     study.optimize(optimize_agent, n_trials=n_trials, n_jobs=1)
     print(study.best_params)
-    
-    while True:
-        if os.path.exists(os.path.join(study_dir, f'best_params_{study_num}.pkl')):
-            study_num += 1
-            continue
-        with open(os.path.join(study_dir, f'best_params_{study_num}.pkl'), 'wb') as hp:
-            pickle.dump(study.best_params, hp)
-            print(f'best hyperparameters saved in best_params_{study_num}.pkl')
-        
-        
-        
-        if os.path.exists(os.path.join(params_dir, f'study_{study_num}.pkl')):
-            study_num += 1
-            continue
-        with open(os.path.join(params_dir, f'study_{study_num}.pkl'), 'wb') as st:
-            pickle.dump(study, st)
-            print(f'study saved in study_{study_num}.pkl')
-        
-        break
             
 if __name__ == '__main__':
     main()

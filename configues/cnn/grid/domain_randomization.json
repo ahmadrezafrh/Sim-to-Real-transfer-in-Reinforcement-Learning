@@ -1,0 +1,40 @@
+{
+
+    "models_dir" : "./models",
+    "logs_dir" : "./logs",
+    "env" : "CustomHopper-source-v0",
+    "alg" : "ppo",
+    "obs" : "cnn",
+    "policy" : "CnnPolicy",
+    "ignore_warnings" : true,
+    "print" : true,
+    "custom_arch" : true,
+    "time_steps" : 4000,
+    
+
+    "domain_randomization" : true,
+    "chosen_domain" : "grid",
+    "n_distributions" : 1,
+    
+    
+    "stacked" : [true],
+    "gray_scale" : [true],
+    "smooth" : [false],
+    "resize" : [true],
+    "resize_shape" : [[60, 60]],
+    "preprocess" : [false],
+    "n_frame_stacks" : [4, 8],
+    "policy_kwargs" : ["base"],
+
+
+    "n_steps" : [2048],
+    "learning_rate" : [0.0004215440315139262],
+    "gamma" : [0.9917611787616847],
+    "clip_range" : [0.12587511822701497],
+    "ent_coef" : [0],
+    "gae_lambda" : [0.959132778841134]
+    
+}
+
+
+
